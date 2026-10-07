@@ -80,11 +80,24 @@ void bleSpooferStart();
 void bleSpooferStop();
 
 // Keyboard/encoder-equivalent input while running: delta +1 = next platform
-// mode, -1 = previous, wrapping through all 7 (Apple Popup, Sour Apple,
-// Fast Pair, Samsung Buds, Samsung Watch, Swift Pair, CHAOS). Live — no
-// radio reinit needed, same as bleJammerAdjustMode(). Mode selection
+// mode, -1 = previous, wrapping through all 8 (Apple Popup, Sour Apple,
+// Fast Pair, Samsung Buds, Samsung Watch, Swift Pair, Flipper Zero, CHAOS).
+// Live — no radio reinit needed, same as bleJammerAdjustMode(). Mode selection
 // persists across Stop()/Start() within a session, also matching
 // ble_jammer.cpp.
 void bleSpooferAdjustMode(int delta);
+
+// ── Payload-picker support ──────────────────────────────────────────────────
+// The orchestrator shows a selectable list of every spam mode on entry (so the
+// user chooses a payload instead of one auto-launching). These let it build
+// that list and commit the choice before calling bleSpooferStart():
+//   bleSpooferModeCount()  — number of selectable modes (== MODE_COUNT)
+//   bleSpooferModeName(i)  — display label for row i (e.g. "FLIPPER ZERO")
+//   bleSpooferGetMode()    — the currently selected mode index
+//   bleSpooferSetMode(i)   — select mode i (clamped); safe to call before Start
+int bleSpooferModeCount();
+const char* bleSpooferModeName(int index);
+int bleSpooferGetMode();
+void bleSpooferSetMode(int index);
 
 #endif // BLE_SPOOFER_H

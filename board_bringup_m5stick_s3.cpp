@@ -68,6 +68,7 @@ enum NavState {
     NAV_BLE_SKELETONKEY_CONNECTING,
     NAV_BLE_SKELETONKEY_RESULTS,
     NAV_BLE_SKELETONKEY_CONTROL,
+    NAV_BLE_SPOOFER_MENU,
     NAV_BLE_SPOOFER_RUNNING,
     NAV_BLE_BEACON_RUNNING,
     NAV_LUNATIC_RUNNING,
@@ -354,6 +355,18 @@ static void showCurrentScreen() {
                                 s_skSnapshot.status[0] ? s_skSnapshot.status : "A/B Browse | Hold A Send");
             break;
         }
+        case NAV_BLE_SPOOFER_MENU: {
+            // Payload picker — a selectable list of every spam mode. Selecting
+            // a row launches that mode (see handleSelect). Built from the BLE
+            // spoofer's own mode table so the two can't drift out of sync.
+            int count = bleSpooferModeCount();
+            static const char *spoofPtrs[16];
+            if (count > 16) count = 16;
+            for (int i = 0; i < count; i++) spoofPtrs[i] = bleSpooferModeName(i);
+            uiRenderShowSubmenu("BLE Spoofer", spoofPtrs, count, s_resultIndex,
+                                "Select a payload to launch");
+            break;
+        }
         case NAV_BLE_SPOOFER_RUNNING:
             showFeatureStatus("BLE Spoofer", "starting...");
             break;
@@ -589,6 +602,9 @@ static void moveSelection(int dir) {
         if (count > 0) s_resultIndex = (s_resultIndex + dir + count) % count;
     } else if (s_navState == NAV_BLE_SKELETONKEY_CONTROL) {
         s_resultIndex = (s_resultIndex + dir + SK_CONTROL_ITEMS) % SK_CONTROL_ITEMS;
+    } else if (s_navState == NAV_BLE_SPOOFER_MENU) {
+        int count = bleSpooferModeCount();
+        if (count > 0) s_resultIndex = (s_resultIndex + dir + count) % count;
     } else if (s_navState == NAV_LUNATIC_RESULTS) {
         int count = lunaticFringeGetResultCount();
         if (count > 0) s_resultIndex = (s_resultIndex + dir + count) % count;
@@ -699,8 +715,10 @@ static void handleSelect() {
             wifiScanStart();
             s_navState = NAV_WIFI_SCAN_RUNNING;
         } else if (s_mainIndex == CARDPUTER_BT_MENU_INDEX && s_subIndex == CARDPUTER_BT_SUBMENU_BLE_SPOOFER) {
-            bleSpooferStart();
-            s_navState = NAV_BLE_SPOOFER_RUNNING;
+            // Show the payload picker instead of auto-launching; cursor starts
+            // on whatever mode was last selected this session.
+            s_resultIndex = bleSpooferGetMode();
+            s_navState = NAV_BLE_SPOOFER_MENU;
         } else if (s_mainIndex == CARDPUTER_BT_MENU_INDEX && s_subIndex == CARDPUTER_BT_SUBMENU_BLE_BEACON) {
             bleBeaconStart();
             s_navState = NAV_BLE_BEACON_RUNNING;
@@ -799,6 +817,11 @@ static void handleSelect() {
         } else {
             s_navState = NAV_PLACEHOLDER;
         }
+    } else if (s_navState == NAV_BLE_SPOOFER_MENU) {
+        // Commit the highlighted payload and start spamming it.
+        bleSpooferSetMode(s_resultIndex);
+        bleSpooferStart();
+        s_navState = NAV_BLE_SPOOFER_RUNNING;
     } else if (s_navState == NAV_EAPOL_AP_LIST) {
         if (eapolSniffGetApResultCount() > 0 && eapolSniffApHasEapol(s_resultIndex)) {
             eapolSniffScanStop();
@@ -979,10 +1002,16 @@ static void handleBack() {
         bleScanStop();
         s_navState = NAV_SUBMENU;
         s_subIndex = CARDPUTER_BT_SUBMENU_BLE_PREDATOR;
-    } else if (s_navState == NAV_BLE_SPOOFER_RUNNING) {
-        bleSpooferStop();
+    } else if (s_navState == NAV_BLE_SPOOFER_MENU) {
+        // Back out of the payload picker to the Bluetooth submenu.
         s_navState = NAV_SUBMENU;
         s_subIndex = CARDPUTER_BT_SUBMENU_BLE_SPOOFER;
+    } else if (s_navState == NAV_BLE_SPOOFER_RUNNING) {
+        // Back from a running payload returns to the picker (not the submenu),
+        // so the user can pick another without re-entering the menu.
+        bleSpooferStop();
+        s_resultIndex = bleSpooferGetMode();
+        s_navState = NAV_BLE_SPOOFER_MENU;
     } else if (s_navState == NAV_BLE_BEACON_RUNNING) {
         bleBeaconStop();
         s_navState = NAV_SUBMENU;
