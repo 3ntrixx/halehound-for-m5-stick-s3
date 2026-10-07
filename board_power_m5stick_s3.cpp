@@ -6,6 +6,7 @@
 #include "board_m5stick_s3.h"
 
 static M5PM1 s_pm1;
+static bool s_pm1Ready = false;
 
 bool boardPowerSetup() {
     // M5Unified normally enables this rail. This port owns its display with
@@ -13,6 +14,7 @@ bool boardPowerSetup() {
     if (s_pm1.begin(&Wire, M5PM1_DEFAULT_ADDR, BOARD_I2C_SDA,
                     BOARD_I2C_SCL, M5PM1_I2C_FREQ_100K) != M5PM1_OK)
         return false;
+    s_pm1Ready = true;
 
     const m5pm1_gpio_num_t rail = M5PM1_GPIO_NUM_2;
     bool ok = s_pm1.gpioSetFunc(rail, M5PM1_GPIO_FUNC_GPIO) == M5PM1_OK;
@@ -22,3 +24,5 @@ bool boardPowerSetup() {
     if (ok) Serial.println("[POWER] M5PM1 L3B rail enabled");
     return ok;
 }
+
+M5PM1 *boardPowerPm1() { return s_pm1Ready ? &s_pm1 : nullptr; }

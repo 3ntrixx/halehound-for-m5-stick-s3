@@ -109,11 +109,14 @@
 #define RADIO_SPI_MISO        SD_MISO
 
 // ─────────────────────────────────────────────────────────────────────────
-// BATTERY — M5PM1 PMIC over the internal I2C bus above. No verified
-// register map yet (see battery_gauge.cpp) — reports "unavailable" rather
-// than a guessed reading until real hardware is in hand to check against.
+// BATTERY — M5PM1 PMIC over the internal I2C bus above. No dedicated
+// fuel-gauge/SOC register on this PMIC (CYD_HAS_FUELGAUGE stays 0 — that
+// flag gates the T-Embed's BQ27220 driver specifically), so
+// battery_gauge.cpp's BOARD_M5STICK_S3 branch reads raw VBAT and
+// interpolates a LiPo discharge curve instead. Still an approximation
+// under radio-TX load — see that file's header comment — not hardware-
+// verified against a real StickS3 yet.
 // ─────────────────────────────────────────────────────────────────────────
-// (no ADC/fuel-gauge macros yet — see CYD_HAS_FUELGAUGE/CYD_HAS_BATTERY below)
 
 // ─────────────────────────────────────────────────────────────────────────
 // DEBUG — verbose [SUBSYS] Serial prints during bring-up.
@@ -141,8 +144,8 @@
 #define CYD_HAS_BUTTONS        1   // two-button gesture nav — see button_input.h
 #define CYD_HAS_IR             0
 #define CYD_HAS_MIC            0
-#define CYD_HAS_FUELGAUGE      0   // M5PM1 not yet wired — see battery_gauge.cpp
-#define CYD_HAS_BATTERY        0
+#define CYD_HAS_FUELGAUGE      0   // no coulomb-counting fuel gauge on M5PM1
+#define CYD_HAS_BATTERY        1   // M5PM1 VBAT read — see battery_gauge.cpp
 #define CYD_HAS_AMP            0
 #define CYD_HAS_I2C_BUS        1   // internal bus for the M5PM1 PMIC
 

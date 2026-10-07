@@ -849,8 +849,10 @@ static void renderWifiMonitor(const WifiMonitorMsg &state,
 }
 
 // Battery indicator — drawn top-right over the generic screens (the
-// Predator screen has its own header; splash/lock don't need it). Reads the
-// BQ27220 values maintained by battery_gauge.cpp.
+// Predator screen has its own header; splash/lock don't need it). Reads
+// whatever battery_gauge.cpp's board-specific backend maintains (T-Embed's
+// BQ27220 fuel gauge, Cardputer ADV's ADC divider, or StickS3's M5PM1 VBAT
+// read) — percent<0 means that board reports no battery, so nothing draws.
 static void renderBatteryIndicator() {
     int pct = batteryGaugePercent();
     if (pct < 0) return;
