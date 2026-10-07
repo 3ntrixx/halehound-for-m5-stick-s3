@@ -234,6 +234,8 @@ extern const unsigned char bitmap_icon_rfid[] PROGMEM;
 extern const unsigned char bitmap_icon_follow[] PROGMEM;
 extern const unsigned char bitmap_icon_stat[] PROGMEM;
 extern const unsigned char bitmap_icon_led[] PROGMEM;
+extern const unsigned char bitmap_icon_recycle[] PROGMEM;
+extern const unsigned char bitmap_icon_dialog[] PROGMEM;
 
 static const unsigned char *const MAIN_MENU_ICONS[NUM_MENU_ITEMS] = {
     bitmap_icon_skull_wifi,
@@ -321,17 +323,49 @@ static const unsigned char *const ABOUT_SUBMENU_ICONS[] = {
 // SIGINT submenu selected below for its LittleFS-backed WiFi/BLE tools.
 
 static const char *const CARDPUTER_BT_SUBMENU[] = {
-    "BLE Spoofer", "BLE Beacon", "BLE Predator", "Tracker Scan",
-#ifdef BOARD_M5STICK_S3
-    "AirTag Tracker",
-#endif
+    "BLE Spoofer", "BLE Beacon", "BLE Predator", "Lunatic Fringe",
     "Back to Main Menu",
 };
 #define CARDPUTER_BT_SUBMENU_BLE_SPOOFER     0
 #define CARDPUTER_BT_SUBMENU_BLE_BEACON      1
 #define CARDPUTER_BT_SUBMENU_BLE_PREDATOR    2
-#define CARDPUTER_BT_SUBMENU_LUNATIC_FRINGE  3  // "Tracker Scan" (all tracker types)
-#define CARDPUTER_BT_SUBMENU_AIRTAG_TRACKER  4  // M5Stick S3 only
+#define CARDPUTER_BT_SUBMENU_LUNATIC_FRINGE  3  // opens the picker below
+
+// "Lunatic Fringe" picker — selecting the row above opens this static list
+// instead of launching a scan directly, same two-step shape as the BLE
+// Spoofer payload picker (NAV_BLE_SPOOFER_MENU in board_bringup_*.cpp). Item
+// set/order matches the reference HaleHound build's own Lunatic Fringe
+// submenu. Only Tracker Scan and AirTag Detect have a working backend
+// (lunatic_fringe.cpp / airtag_tracker.cpp) — Phantom Flood/AirTag Replay/
+// AirTag Scream are not ported yet and fall through to NAV_PLACEHOLDER,
+// same convention as every other not-yet-ported row in this project.
+static const char *const LUNATIC_FRINGE_SUBMENU[] = {
+    "Tracker Scan",
+#ifdef BOARD_M5STICK_S3
+    "AirTag Detect", "Phantom Flood", "AirTag Replay", "AirTag Scream",
+#endif
+};
+#define LUNATIC_FRINGE_SUBMENU_TRACKER_SCAN   0  // all tracker types (lunatic_fringe.cpp)
+#ifdef BOARD_M5STICK_S3
+#define LUNATIC_FRINGE_SUBMENU_AIRTAG_DETECT  1  // AirTag/FindMy-only (airtag_tracker.cpp), M5Stick S3 only
+#define LUNATIC_FRINGE_SUBMENU_PHANTOM_FLOOD  2  // not ported yet — placeholder
+#define LUNATIC_FRINGE_SUBMENU_AIRTAG_REPLAY  3  // not ported yet — placeholder
+#define LUNATIC_FRINGE_SUBMENU_AIRTAG_SCREAM  4  // not ported yet — placeholder
+#endif
+#define LUNATIC_FRINGE_SUBMENU_COUNT (sizeof(LUNATIC_FRINGE_SUBMENU) / sizeof(char*))
+
+// Icons: Tracker Scan/AirTag Detect reuse the exact bitmaps the old flat
+// Bluetooth-submenu rows used for these same two features; Phantom Flood
+// borrows Auth Flood's "nuke" (WIFI_SUBMENU_ICONS) since both are flood-type
+// attacks; AirTag Replay gets the loop/recycle glyph (replays a captured
+// advertisement); AirTag Scream gets the speech-bubble glyph (makes the
+// tracker emit a sound/alert).
+static const unsigned char *const LUNATIC_FRINGE_SUBMENU_ICONS[] = {
+    bitmap_icon_scanner,
+#ifdef BOARD_M5STICK_S3
+    bitmap_icon_apple, bitmap_icon_nuke, bitmap_icon_recycle, bitmap_icon_dialog,
+#endif
+};
 
 static const char *const CARDPUTER_JAMDETECT_SUBMENU[] = {
     "WiFi Guardian", "Back to Main Menu",
@@ -390,11 +424,7 @@ static const unsigned char *const CARDPUTER_MAIN_MENU_ICONS[CARDPUTER_NUM_MENU_I
 
 static const unsigned char *const CARDPUTER_BT_SUBMENU_ICONS[] = {
     bitmap_icon_spoofer, bitmap_icon_signal, bitmap_icon_analyzer,
-    bitmap_icon_scanner,
-#ifdef BOARD_M5STICK_S3
-    bitmap_icon_apple,
-#endif
-    bitmap_icon_go_back,
+    bitmap_icon_scanner, bitmap_icon_go_back,
 };
 
 static const unsigned char *const CARDPUTER_JAMDETECT_SUBMENU_ICONS[] = {

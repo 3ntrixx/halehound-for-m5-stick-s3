@@ -19,17 +19,17 @@
 // list on RENDER_MSG_SCAN_COMPLETE while it's on screen — the list is
 // never a static one-shot snapshot).
 //
-// Adapted for this board's no-touchscreen, no-drill-down UI (same call as
-// every other RESULTS list in this project, e.g. ble_scan.cpp/
-// station_scan.cpp): the original's separate tap-for-detail overlay
-// (battery level, status byte, first/last-seen timers, a large proximity
-// bar) is folded into one compact result line per device instead — type,
-// short MAC, RSSI, and the same 5-tier proximity estimate
-// (tdProximityStr) the original also shows on its detail screen. AirTag
-// battery-level decoding and the alert-flash-on-new-device animation are
-// dropped as pure display embellishments with no functional effect on
-// what's detected.
+// UI: screen-for-screen port of the reference build's own LUNATIC FRINGE
+// screen (ui_render.h's uiRenderShowTrackerScanning()/ShowTrackerList()) —
+// glitch title, FOUND/SCANS counters, a signal-bar row per device (type
+// code, short MAC, RSSI, the same 5-tier proximity estimate the original
+// calls tdProximityStr(), and a live/active dot). The original's separate
+// tap-for-detail overlay (status byte, first/last-seen timers, a large
+// proximity bar) is NOT ported — this board has no touchscreen/drill-down
+// input for it.
 // ═══════════════════════════════════════════════════════════════════════════
+
+#include "ui_render.h" // TrackerDisplayRow / UI_TRACKER_MAX_ROWS
 
 // Starts the scan worker on core 0. Call once per entry into the feature.
 void lunaticFringeStart();
@@ -41,7 +41,8 @@ void lunaticFringeStop();
 
 // Result accessors, valid after the first RENDER_MSG_SCAN_COMPLETE and
 // refreshed live on every subsequent one while results are on screen.
-const char *const *lunaticFringeGetResultLines();
-int lunaticFringeGetResultCount();
+int lunaticFringeGetDeviceCount();  // raw count, 0 when nothing found yet
+int lunaticFringeGetScanCount();    // completed 5s scan windows this session
+int lunaticFringeGetDisplayRows(TrackerDisplayRow *out, int max);
 
 #endif // LUNATIC_FRINGE_H

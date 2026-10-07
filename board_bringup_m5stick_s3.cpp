@@ -71,6 +71,8 @@ enum NavState {
     NAV_BLE_SPOOFER_MENU,
     NAV_BLE_SPOOFER_RUNNING,
     NAV_BLE_BEACON_RUNNING,
+    NAV_LUNATIC_FRINGE_MENU,
+    NAV_LUNATIC_FRINGE_PLACEHOLDER, // Phantom Flood/AirTag Replay/AirTag Scream (not ported yet)
     NAV_LUNATIC_RUNNING,
     NAV_LUNATIC_RESULTS,
     NAV_AIRTAG_RUNNING,
@@ -278,20 +280,42 @@ static void showCurrentScreen() {
         case NAV_PLACEHOLDER:
             uiRenderShowPlaceholder(CARDPUTER_MAIN_MENU[s_mainIndex].items[s_subIndex]);
             break;
+        case NAV_LUNATIC_FRINGE_MENU:
+            uiRenderShowSubmenuIcons("Lunatic Fringe", LUNATIC_FRINGE_SUBMENU, LUNATIC_FRINGE_SUBMENU_ICONS,
+                                     LUNATIC_FRINGE_SUBMENU_COUNT, s_resultIndex);
+            break;
+        case NAV_LUNATIC_FRINGE_PLACEHOLDER:
+            uiRenderShowPlaceholder(LUNATIC_FRINGE_SUBMENU[s_resultIndex]);
+            break;
+        // Screen-for-screen port of the reference build's own LUNATIC FRINGE /
+        // AIRTAG screens (ui_render.h's uiRenderShowTrackerScanning/List) —
+        // glitch title reads "Lunatic Fringe"/"AirTag" (not the picker row's
+        // own label, e.g. "AirTag Detect"), same convention as "BLE Predator"
+        // opening a screen titled plain "PREDATOR".
         case NAV_LUNATIC_RUNNING:
-            showFeatureStatus("Tracker Scan", "Scanning...");
+            uiRenderShowTrackerScanning("LUNATIC", "FRINGE", "FOUND",
+                                       lunaticFringeGetDeviceCount(), lunaticFringeGetScanCount(),
+                                       "Scanning for Google, Samsung,", "Tile, Chipolo, Apple FindMy...");
             break;
-        case NAV_LUNATIC_RESULTS:
-            uiRenderShowSubmenu("Trackers", lunaticFringeGetResultLines(),
-                                lunaticFringeGetResultCount(), s_resultIndex);
+        case NAV_LUNATIC_RESULTS: {
+            static TrackerDisplayRow rows[UI_TRACKER_MAX_ROWS];
+            int n = lunaticFringeGetDisplayRows(rows, UI_TRACKER_MAX_ROWS);
+            uiRenderShowTrackerList("LUNATIC", "FRINGE", false, "FOUND",
+                                   lunaticFringeGetScanCount(), rows, n, s_resultIndex);
             break;
+        }
         case NAV_AIRTAG_RUNNING:
-            showFeatureStatus("AirTag Tracker", "Scanning...");
+            uiRenderShowTrackerScanning("AIRTAG", nullptr, "TRACKERS",
+                                       airtagTrackerGetDeviceCount(), airtagTrackerGetScanCount(),
+                                       "Scanning for AirTags &", "Find My accessories...");
             break;
-        case NAV_AIRTAG_RESULTS:
-            uiRenderShowSubmenu("AirTags", airtagTrackerGetResultLines(),
-                                airtagTrackerGetResultCount(), s_resultIndex);
+        case NAV_AIRTAG_RESULTS: {
+            static TrackerDisplayRow rows[UI_TRACKER_MAX_ROWS];
+            int n = airtagTrackerGetDisplayRows(rows, UI_TRACKER_MAX_ROWS);
+            uiRenderShowTrackerList("AIRTAG", nullptr, true, "TRACKERS",
+                                   airtagTrackerGetScanCount(), rows, n, s_resultIndex);
             break;
+        }
         case NAV_WIFI_SCAN_RUNNING:
             showWifiFeatureStatus("WIFI SCAN", "Scanning networks...", "Hold B Cancel");
             break;
@@ -605,11 +629,14 @@ static void moveSelection(int dir) {
     } else if (s_navState == NAV_BLE_SPOOFER_MENU) {
         int count = bleSpooferModeCount();
         if (count > 0) s_resultIndex = (s_resultIndex + dir + count) % count;
+    } else if (s_navState == NAV_LUNATIC_FRINGE_MENU) {
+        int count = LUNATIC_FRINGE_SUBMENU_COUNT;
+        if (count > 0) s_resultIndex = (s_resultIndex + dir + count) % count;
     } else if (s_navState == NAV_LUNATIC_RESULTS) {
-        int count = lunaticFringeGetResultCount();
+        int count = lunaticFringeGetDeviceCount();
         if (count > 0) s_resultIndex = (s_resultIndex + dir + count) % count;
     } else if (s_navState == NAV_AIRTAG_RESULTS) {
-        int count = airtagTrackerGetResultCount();
+        int count = airtagTrackerGetDeviceCount();
         if (count > 0) s_resultIndex = (s_resultIndex + dir + count) % count;
     } else if (s_navState == NAV_EAPOL_AP_LIST) {
         int count = eapolSniffGetApResultCount();
@@ -726,11 +753,10 @@ static void handleSelect() {
             bleScanStart();
             s_navState = NAV_BLE_SCAN_RUNNING;
         } else if (s_mainIndex == CARDPUTER_BT_MENU_INDEX && s_subIndex == CARDPUTER_BT_SUBMENU_LUNATIC_FRINGE) {
-            lunaticFringeStart();
-            s_navState = NAV_LUNATIC_RUNNING;
-        } else if (s_mainIndex == CARDPUTER_BT_MENU_INDEX && s_subIndex == CARDPUTER_BT_SUBMENU_AIRTAG_TRACKER) {
-            airtagTrackerStart();
-            s_navState = NAV_AIRTAG_RUNNING;
+            // Show the Tracker Scan / AirTag Tracker picker instead of
+            // auto-launching, same shape as the BLE Spoofer payload picker.
+            s_resultIndex = 0;
+            s_navState = NAV_LUNATIC_FRINGE_MENU;
         } else if (s_mainIndex == CARDPUTER_SIGINT_MENU_INDEX && s_subIndex == CARDPUTER_SIGINT_SUBMENU_EAPOL_CAPTURE) {
             eapolSniffScanStart();
             s_navState = NAV_EAPOL_SCAN_RUNNING;
@@ -822,6 +848,20 @@ static void handleSelect() {
         bleSpooferSetMode(s_resultIndex);
         bleSpooferStart();
         s_navState = NAV_BLE_SPOOFER_RUNNING;
+    } else if (s_navState == NAV_LUNATIC_FRINGE_MENU) {
+        if (s_resultIndex == LUNATIC_FRINGE_SUBMENU_TRACKER_SCAN) {
+            lunaticFringeStart();
+            s_navState = NAV_LUNATIC_RUNNING;
+        }
+#ifdef BOARD_M5STICK_S3
+        else if (s_resultIndex == LUNATIC_FRINGE_SUBMENU_AIRTAG_DETECT) {
+            airtagTrackerStart();
+            s_navState = NAV_AIRTAG_RUNNING;
+        } else {
+            // Phantom Flood / AirTag Replay / AirTag Scream — not ported yet.
+            s_navState = NAV_LUNATIC_FRINGE_PLACEHOLDER;
+        }
+#endif
     } else if (s_navState == NAV_EAPOL_AP_LIST) {
         if (eapolSniffGetApResultCount() > 0 && eapolSniffApHasEapol(s_resultIndex)) {
             eapolSniffScanStop();
@@ -1016,14 +1056,25 @@ static void handleBack() {
         bleBeaconStop();
         s_navState = NAV_SUBMENU;
         s_subIndex = CARDPUTER_BT_SUBMENU_BLE_BEACON;
-    } else if (s_navState == NAV_LUNATIC_RUNNING || s_navState == NAV_LUNATIC_RESULTS) {
-        lunaticFringeStop();
+    } else if (s_navState == NAV_LUNATIC_FRINGE_MENU) {
+        // Back out of the Lunatic Fringe picker to the Bluetooth submenu.
         s_navState = NAV_SUBMENU;
         s_subIndex = CARDPUTER_BT_SUBMENU_LUNATIC_FRINGE;
+    } else if (s_navState == NAV_LUNATIC_FRINGE_PLACEHOLDER) {
+        // Back out of a not-yet-ported row to the Lunatic Fringe picker.
+        s_navState = NAV_LUNATIC_FRINGE_MENU;
+    } else if (s_navState == NAV_LUNATIC_RUNNING || s_navState == NAV_LUNATIC_RESULTS) {
+        // Back from a running scan returns to the picker (not the submenu),
+        // so the user can pick another without re-entering the menu.
+        lunaticFringeStop();
+        s_resultIndex = LUNATIC_FRINGE_SUBMENU_TRACKER_SCAN;
+        s_navState = NAV_LUNATIC_FRINGE_MENU;
     } else if (s_navState == NAV_AIRTAG_RUNNING || s_navState == NAV_AIRTAG_RESULTS) {
         airtagTrackerStop();
-        s_navState = NAV_SUBMENU;
-        s_subIndex = CARDPUTER_BT_SUBMENU_AIRTAG_TRACKER;
+#ifdef BOARD_M5STICK_S3
+        s_resultIndex = LUNATIC_FRINGE_SUBMENU_AIRTAG_DETECT;
+#endif
+        s_navState = NAV_LUNATIC_FRINGE_MENU;
     } else if (s_navState == NAV_EAPOL_SCAN_RUNNING || s_navState == NAV_EAPOL_AP_LIST) {
         eapolSniffScanStop();
         s_navState = NAV_SUBMENU;
@@ -1361,19 +1412,27 @@ void loop() {
                 }
                 showCurrentScreen();
             } else if (msg.kind == RENDER_MSG_SCAN_COMPLETE && s_navState == NAV_LUNATIC_RUNNING) {
-                s_navState = NAV_LUNATIC_RESULTS;
-                s_resultIndex = 0;
+                // Stays on the idle/scanning screen (SCANS: N keeps advancing)
+                // until a tracker actually turns up, matching the reference
+                // build rather than switching to the list after a fixed
+                // one-window timer.
+                if (lunaticFringeGetDeviceCount() > 0) {
+                    s_navState = NAV_LUNATIC_RESULTS;
+                    s_resultIndex = 0;
+                }
                 showCurrentScreen();
             } else if (msg.kind == RENDER_MSG_SCAN_COMPLETE && s_navState == NAV_LUNATIC_RESULTS) {
-                int count = lunaticFringeGetResultCount();
+                int count = lunaticFringeGetDeviceCount();
                 if (s_resultIndex >= count) s_resultIndex = (count > 0) ? count - 1 : 0;
                 showCurrentScreen();
             } else if (msg.kind == RENDER_MSG_SCAN_COMPLETE && s_navState == NAV_AIRTAG_RUNNING) {
-                s_navState = NAV_AIRTAG_RESULTS;
-                s_resultIndex = 0;
+                if (airtagTrackerGetDeviceCount() > 0) {
+                    s_navState = NAV_AIRTAG_RESULTS;
+                    s_resultIndex = 0;
+                }
                 showCurrentScreen();
             } else if (msg.kind == RENDER_MSG_SCAN_COMPLETE && s_navState == NAV_AIRTAG_RESULTS) {
-                int count = airtagTrackerGetResultCount();
+                int count = airtagTrackerGetDeviceCount();
                 if (s_resultIndex >= count) s_resultIndex = (count > 0) ? count - 1 : 0;
                 showCurrentScreen();
             } else if (msg.kind == RENDER_MSG_STATUS_TEXT && s_navState == NAV_BLE_SPOOFER_RUNNING) {

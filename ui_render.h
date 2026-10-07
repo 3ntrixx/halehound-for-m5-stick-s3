@@ -190,6 +190,40 @@ void uiRenderShowBleDevices(const BleDisplayRow *rows, const BleDisplayStats *st
                             int selectedIndex);
 
 // ─────────────────────────────────────────────────────────────────────────
+// Lunatic Fringe (multi-vendor tracker scan) / AirTag Detect — screen-for-
+// screen port of the reference HaleHound build's own LUNATIC FRINGE / AIRTAG
+// screens: 1-2 line glitch title, GPS indicator (always "--", this board has
+// no GPS wired — see wardrive_lite.h), FOUND|TRACKERS + SCANS counters,
+// signal-bar icon per row, selected-row highlight, live/active dot.
+// ─────────────────────────────────────────────────────────────────────────
+
+#define UI_TRACKER_MAX_ROWS 20 // matches lunatic_fringe.cpp/airtag_tracker.cpp's MAX_RESULTS
+
+struct TrackerDisplayRow {
+    char col1[5];      // type short-code ("ATAG" etc, Lunatic Fringe) or
+                        // battery level ("FULL" etc, AirTag Detect)
+    char mac[9];        // "XX:XX:XX" (last 3 bytes, matches the original)
+    int rssi;
+    char proximity[6];   // "1-3m" etc (tdProximityStr())
+    bool active;          // seen within the last ~10s — draws the live dot
+};
+
+// Pre-scan "listening" screen (shown until the first tracker turns up,
+// however many scan windows that takes) — title + FOUND|TRACKERS/SCANS
+// counters + a short message + the vendor/type legend being scanned for.
+void uiRenderShowTrackerScanning(const char *title, const char *titleLine2,
+                                 const char *countLabel, int found, int scans,
+                                 const char *legendLine1, const char *legendLine2);
+
+// Live device list — `rowCount` doubles as the FOUND|TRACKERS header count.
+// `showHeader` draws a persistent "TRACKERS: N  SCANS: N" row above the list
+// (AirTag Detect); Lunatic Fringe passes false — its list has no header,
+// matching the reference build.
+void uiRenderShowTrackerList(const char *title, const char *titleLine2,
+                             bool showHeader, const char *countLabel, int scans,
+                             const TrackerDisplayRow *rows, int rowCount, int selected);
+
+// ─────────────────────────────────────────────────────────────────────────
 // Display settings (Settings screens + boot application)
 // ─────────────────────────────────────────────────────────────────────────
 

@@ -43,7 +43,7 @@ struct ScreenState {
     enum Kind { MAIN_MENU, SUBMENU, PLACEHOLDER, STATUS, WIFI_STATUS, WIFI_LIST,
                 WIFI_MONITOR, SPECTRUM, NRF_SCANNER,
                 NRF_ANALYZER, NRF_SNIFFER, BLE_LIST, MOUSEJACK, SPLASH, INFO,
-                LOCK } kind;
+                LOCK, TRACKER_SCANNING, TRACKER_LIST } kind;
     char title[24];
     const char *const *items;
     const unsigned char *const *icons; // optional per-row 16x16 icons (submenus)
@@ -55,6 +55,14 @@ struct ScreenState {
     int specCount;
     int8_t lockWifiCh; // NRF analyzer AP lock (0 = full band)
     bool running;      // NRF analyzer start/stop state
+    // Lunatic Fringe / AirTag Detect (TRACKER_SCANNING/TRACKER_LIST) —
+    // `title`/`titleLine2` are the 1-2 glitch title lines, `count` is
+    // FOUND|TRACKERS, `message`/`hint` double as the two legend lines on
+    // the scanning screen.
+    char titleLine2[16];
+    char countLabel[10]; // "FOUND" or "TRACKERS"
+    int trackerScans;
+    bool trackerShowHeader;
 };
 
 static ScreenState s_state = {};
@@ -178,6 +186,10 @@ static BleDisplayRow s_bleDrawRows[UI_BLE_MAX_ROWS];
 static BleDisplayStats s_bleDrawStats;
 static int s_bleDrawSelected = 0;
 
+// Lunatic Fringe / AirTag Detect table — same snapshot-under-mutex shape.
+static TrackerDisplayRow s_trackerRows[UI_TRACKER_MAX_ROWS];
+static TrackerDisplayRow s_trackerDrawRows[UI_TRACKER_MAX_ROWS];
+
 // NRF sniffer table — same snapshot-under-mutex shape as the BLE list above.
 static NrfSniffDisplayRow s_nrfSniffRows[UI_NRF_MAX_ROWS];
 static NrfSniffDisplayStats s_nrfSniffStats;
@@ -241,6 +253,16 @@ static void drawClippedText(const char *value, int x, int y, int maxWidth,
     sprite.print(buf);
 }
 
+// The Bluetooth submenu outgrew 3 visible rows (BLE Spoofer/Beacon/Predator/
+// Lunatic Fringe/Back) once Lunatic Fringe stopped being the last row —
+// dropping its own big glitch title (the small top bar/icon still show)
+// reclaims the ~27px the list needs for a 4th visible row, same list
+// content otherwise. Matched by exact title, not substring, so it only
+// affects this one submenu screen.
+static bool chromeCompactTitle(const char *title) {
+    return strcmp(title, "Bluetooth") == 0;
+}
+
 static void renderChrome(const char *title, const char *mode) {
     sprite.fillSprite(TFT_BLACK);
     sprite.drawBitmap((sprite.width() - SKULL_BG_WIDTH) / 2, -68,
@@ -251,6 +273,8 @@ static void renderChrome(const char *title, const char *mode) {
     drawClippedText(mode, 30, 4, sprite.width() - 101, HH_BLUE, HH_DARK);
     sprite.drawBitmap(sprite.width() - 84, 0, iconForTitle(title), 16, 16, HH_PINK);
     sprite.drawFastHLine(0, 17, sprite.width(), HH_VIOLET);
+
+    if (chromeCompactTitle(title)) return;
 
     sprite.setFreeFont(&Nosifer_Regular10pt7b);
     int tw = sprite.textWidth(title);
@@ -310,7 +334,7 @@ static void renderList(const char *title, const char *const *items,
     renderChrome(title, menu ? "MENU  ROT=SELECT" : "RESULTS  ROT=BROWSE");
 #endif
     const int rowH = menu ? 20 : 14;
-    const int top = 47;
+    const int top = chromeCompactTitle(title) ? 20 : 47;
     const int visible = (sprite.height() - 16 - top) / rowH;
     int first = selected >= visible ? selected - visible + 1 : 0;
     if (first > count - visible && count > visible) first = count - visible;
@@ -1838,6 +1862,286 @@ static void renderBleDevices(const BleDisplayRow *rows, const BleDisplayStats *s
 #endif
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Lunatic Fringe (multi-vendor tracker scan) / AirTag Detect — screen-for-
+// screen port of the reference HaleHound build's own LUNATIC FRINGE / AIRTAG
+// screens: GPS indicator, glitch title (1 or 2 lines), FOUND|TRACKERS +
+// SCANS counters, signal-bar row list, selected-row highlight, live dot.
+// See ui_render.h's TrackerDisplayRow doc comment.
+// ─────────────────────────────────────────────────────────────────────────
+
+static void drawGlitchLine(const char *text, int y) {
+    sprite.setFreeFont(&Nosifer_Regular10pt7b);
+    sprite.setTextSize(1);
+    int tw = sprite.textWidth(text);
+    int x = (sprite.width() - tw) / 2;
+    sprite.setTextColor(HH_BLUE, TFT_BLACK);
+    sprite.setCursor(x - 1, y - 1);
+    sprite.print(text);
+    sprite.setTextColor(HH_PINK, TFT_BLACK);
+    sprite.setCursor(x + 1, y + 1);
+    sprite.print(text);
+    sprite.setTextColor(TFT_WHITE, TFT_BLACK);
+    sprite.setCursor(x, y);
+    sprite.print(text);
+    sprite.setFreeFont(NULL);
+}
+
+// AirTag reference palette. The muted red selection is lifted toward coral
+// so it stays visibly red without swallowing the small text on the StickS3.
+static const uint16_t AIRTAG_CYAN = 0x2DDF;
+static const uint16_t AIRTAG_PINK = 0xD39F;
+static const uint16_t AIRTAG_SELECTED_BG = 0xC249;
+static const uint16_t AIRTAG_SELECTED_TEXT = 0xF59F;
+
+static bool isAirTagScreen(const char *title) {
+    return strcmp(title, "AIRTAG") == 0;
+}
+
+// GPS:-- (this board has no GPS wired, see wardrive_lite.h — always reads
+// "--", same as the reference build shows with no fix) + the back/category
+// icon bar + a 1- or 2-line glitch title. Returns the first free Y row.
+static int renderTrackerChrome(const char *line1, const char *line2) {
+    sprite.fillSprite(TFT_BLACK);
+
+    if (isAirTagScreen(line1)) {
+        // 48px chrome + 9px counters + seven 10px rows + 8px footer = 135px.
+        sprite.setFreeFont(NULL);
+        sprite.setTextSize(1);
+        sprite.setTextColor(TFT_DARKGREY, TFT_BLACK);
+        sprite.setCursor(4, 0);
+        sprite.print("GPS:--");
+        sprite.fillRect(0, 8, sprite.width(), 16, HH_GUNMETAL);
+        sprite.drawFastHLine(0, 8, sprite.width(), AIRTAG_CYAN);
+        sprite.drawBitmap(6, 8, bitmap_icon_go_back, 16, 16, AIRTAG_CYAN);
+        sprite.drawBitmap(sprite.width() - 22, 8, bitmap_icon_power, 16, 16, AIRTAG_CYAN);
+        sprite.drawFastHLine(0, 24, sprite.width(), AIRTAG_PINK);
+        drawGlitchLine(line1, 38);
+        sprite.drawFastHLine(0, 46, sprite.width(), AIRTAG_PINK);
+        return 48;
+    }
+
+    sprite.setTextSize(1);
+    sprite.setTextColor(HH_GUNMETAL, TFT_BLACK);
+    sprite.setCursor(4, 2);
+    sprite.print("GPS:--");
+
+    const int ctrlBarY = 10;
+    sprite.fillRect(0, ctrlBarY, sprite.width(), 16, HH_DARK);
+    sprite.drawBitmap(6, ctrlBarY, bitmap_icon_go_back, 16, 16, HH_BLUE);
+    // Both screens are Bluetooth-category features — fixed icon rather than
+    // iconForTitle(), which keys off mixed-case substrings ("Lunatic") that
+    // these screens' all-caps glitch titles ("LUNATIC"/"AIRTAG") won't match.
+    sprite.drawBitmap(sprite.width() - 22, ctrlBarY, bitmap_icon_skull_bluetooth, 16, 16, HH_PINK);
+    const int hline1Y = ctrlBarY + 16;
+    sprite.drawFastHLine(0, hline1Y, sprite.width(), HH_VIOLET);
+
+    int titleBottom;
+    if (line2 && line2[0]) {
+        drawGlitchLine(line1, hline1Y + 20);
+        drawGlitchLine(line2, hline1Y + 38);
+        titleBottom = hline1Y + 44;
+    } else {
+        drawGlitchLine(line1, hline1Y + 21);
+        titleBottom = hline1Y + 27;
+    }
+    sprite.drawFastHLine(0, titleBottom, sprite.width(), HH_PINK);
+    return titleBottom + 3;
+}
+
+static void renderAirTagCounters(int y, int count, int scans) {
+    sprite.setTextSize(1);
+    sprite.setTextColor(AIRTAG_PINK, TFT_BLACK);
+    sprite.setCursor(4, y);
+    sprite.printf("TRACKERS: %d", count);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "SCANS: %d", scans);
+    sprite.setCursor(sprite.width() - sprite.textWidth(buf) - 4, y);
+    sprite.print(buf);
+}
+
+static void renderAirTagFooter(int selected, int count) {
+    const int y = sprite.height() - 8;
+    sprite.setTextSize(1);
+#ifdef BOARD_M5STICK_S3
+    const char *hint = "A/B Move  Hold B Back";
+#else
+    const char *hint = "UP/DN Move  BACK Exit";
+#endif
+    drawClippedText(hint, 4, y, sprite.width() - 42, TFT_DARKGREY, TFT_BLACK);
+    if (count > 0) {
+        char pos[12];
+        snprintf(pos, sizeof(pos), "%d/%d", selected + 1, count);
+        drawClippedText(pos, sprite.width() - sprite.textWidth(pos) - 4, y,
+                        36, AIRTAG_PINK, TFT_BLACK);
+    }
+}
+
+static void renderAirTagList(int y, int count, int scans,
+                             const TrackerDisplayRow *rows, int rowCount, int selected) {
+    renderAirTagCounters(y, count, scans);
+    const int listTop = y + 9;
+    const int rowH = 10;
+    const int visible = (sprite.height() - 8 - listTop) / rowH;
+    if (rowCount <= 0) {
+        drawClippedText("No trackers found", 4, listTop + 4,
+                        sprite.width() - 8, AIRTAG_PINK, TFT_BLACK);
+        renderAirTagFooter(0, 0);
+        return;
+    }
+    if (selected < 0) selected = 0;
+    if (selected >= rowCount) selected = rowCount - 1;
+    int first = selected >= visible ? selected - visible + 1 : 0;
+    if (rowCount > visible && first > rowCount - visible) first = rowCount - visible;
+
+    for (int row = 0; row < visible && first + row < rowCount; ++row) {
+        const int i = first + row;
+        const TrackerDisplayRow &d = rows[i];
+        const int ry = listTop + row * rowH;
+        const bool sel = i == selected;
+        const uint16_t bg = sel ? AIRTAG_SELECTED_BG : TFT_BLACK;
+        const uint16_t reading = sel ? AIRTAG_SELECTED_TEXT : AIRTAG_PINK;
+        if (sel) sprite.fillRect(0, ry, sprite.width(), rowH, bg);
+
+        const int bars = d.rssi > -40 ? 5 : d.rssi > -55 ? 4 :
+                         d.rssi > -65 ? 3 : d.rssi > -75 ? 2 : d.rssi > -90 ? 1 : 0;
+        for (int b = 0; b < 5; ++b) {
+            const int h = 2 + b * 3 / 2;
+            sprite.fillRect(4 + b * 3, ry + 9 - h, 2, h,
+                            b < bars ? AIRTAG_SELECTED_TEXT : 0x2948);
+        }
+
+        // Reference order: signal bars, MAC suffix, battery, RSSI, distance.
+        // Fixed 6px text cells leave room for -100dB and 8-15m at 240px.
+        drawClippedText(d.mac, 24, ry + 1, 48, sel ? TFT_WHITE : AIRTAG_CYAN, bg);
+        drawClippedText(d.col1, 84, ry + 1, 24,
+                        strcmp(d.col1, "CRIT") == 0 ? (sel ? 0xFE59 : 0xFAAA) : reading, bg);
+        char dbm[12];
+        snprintf(dbm, sizeof(dbm), "%ddB", d.rssi);
+        drawClippedText(dbm, 126, ry + 1, 42, reading, bg);
+        drawClippedText(d.proximity, 186, ry + 1, 36, reading, bg);
+    }
+    renderAirTagFooter(selected, rowCount);
+}
+
+static void renderTrackerScanning(const char *title, const char *titleLine2,
+                                  const char *countLabel, int found, int scans,
+                                  const char *legendLine1, const char *legendLine2) {
+    int y = renderTrackerChrome(title, titleLine2);
+
+    if (isAirTagScreen(title)) {
+        renderAirTagCounters(y, found, scans);
+        drawClippedText(found == 0 ? "No trackers detected" : "Live tracking...",
+                        4, y + 17, sprite.width() - 8, TFT_WHITE, TFT_BLACK);
+        drawClippedText(legendLine1, 4, y + 31, sprite.width() - 8, AIRTAG_CYAN, TFT_BLACK);
+        drawClippedText(legendLine2, 4, y + 41, sprite.width() - 8, AIRTAG_CYAN, TFT_BLACK);
+        drawClippedText("SCANNING...", 4, y + 59, sprite.width() - 8, AIRTAG_PINK, TFT_BLACK);
+        renderAirTagFooter(0, 0);
+        return;
+    }
+
+    sprite.setTextSize(1);
+    sprite.setTextColor(HH_VIOLET, TFT_BLACK);
+    sprite.setCursor(4, y);
+    sprite.printf("%s: %d", countLabel, found);
+    char scansBuf[16];
+    snprintf(scansBuf, sizeof(scansBuf), "SCANS: %d", scans);
+    sprite.setCursor(sprite.width() - (int)strlen(scansBuf) * 6 - 4, y);
+    sprite.print(scansBuf);
+    y += 12;
+
+    sprite.setTextColor(TFT_WHITE, TFT_BLACK);
+    sprite.setCursor(4, y);
+    sprite.print(found == 0 ? "No trackers detected" : "Live tracking...");
+    y += 14;
+
+    sprite.setTextColor(HH_GUNMETAL, TFT_BLACK);
+    if (legendLine1) { sprite.setCursor(4, y); sprite.print(legendLine1); y += 10; }
+    if (legendLine2) { sprite.setCursor(4, y); sprite.print(legendLine2); y += 10; }
+
+    const int barY = sprite.height() - 14;
+    sprite.fillRect(0, barY, sprite.width(), 14, HH_PINK);
+    sprite.setTextColor(TFT_BLACK, HH_PINK);
+    sprite.setCursor(4, barY + 3);
+    sprite.print("[B] SCANNING...");
+}
+
+static void renderTrackerList(const char *title, const char *titleLine2,
+                              bool showHeader, const char *countLabel, int count, int scans,
+                              const TrackerDisplayRow *rows, int rowCount, int selected) {
+    int y = renderTrackerChrome(title, titleLine2);
+
+    if (isAirTagScreen(title)) {
+        renderAirTagList(y, count, scans, rows, rowCount, selected);
+        return;
+    }
+
+    if (showHeader) {
+        sprite.setTextSize(1);
+        sprite.setTextColor(HH_PINK, TFT_BLACK);
+        sprite.setCursor(4, y);
+        sprite.printf("%s: %d", countLabel, count);
+        char scansBuf[16];
+        snprintf(scansBuf, sizeof(scansBuf), "SCANS: %d", scans);
+        sprite.setCursor(sprite.width() - (int)strlen(scansBuf) * 6 - 4, y);
+        sprite.print(scansBuf);
+        y += 11;
+        sprite.drawFastHLine(0, y, sprite.width(), HH_PINK);
+        y += 2;
+    }
+
+    const int rowH = 16;
+    const int footerH = 12;
+    const int listTop = y;
+    const int visible = (sprite.height() - footerH - listTop) / rowH;
+
+    if (rowCount <= 0) {
+        sprite.setTextColor(HH_GUNMETAL, TFT_BLACK);
+        sprite.setCursor(4, listTop + 4);
+        sprite.print("No trackers found");
+    } else {
+        if (selected < 0) selected = 0;
+        if (selected >= rowCount) selected = rowCount - 1;
+        int first = (selected >= visible) ? selected - visible + 1 : 0;
+        if (first > rowCount - visible && rowCount > visible) first = rowCount - visible;
+        if (first < 0) first = 0;
+
+        for (int row = 0; row < visible && (first + row) < rowCount; row++) {
+            int i = first + row;
+            const TrackerDisplayRow *d = &rows[i];
+            int ry = listTop + row * rowH;
+            bool sel = (i == selected);
+            uint16_t bg = sel ? TFT_RED : TFT_BLACK;
+            if (sel) sprite.fillRect(0, ry, sprite.width(), rowH - 1, bg);
+
+            renderBleBars(6, ry + 2, d->rssi);
+
+            uint16_t fg = sel ? TFT_WHITE : HH_BLUE;
+            sprite.setTextColor(fg, bg);
+            sprite.setCursor(28, ry + 4);
+            sprite.print(d->col1);
+            sprite.setCursor(66, ry + 4);
+            sprite.print(d->mac);
+            char dbm[8];
+            snprintf(dbm, sizeof(dbm), "%ddB", d->rssi);
+            sprite.setCursor(136, ry + 4);
+            sprite.print(dbm);
+            sprite.setCursor(182, ry + 4);
+            sprite.print(d->proximity);
+
+            if (d->active) {
+                sprite.fillCircle(sprite.width() - 6, ry + 8, 2, sel ? TFT_WHITE : HH_PINK);
+            }
+        }
+    }
+
+    const int fy = sprite.height() - footerH;
+    sprite.fillRect(0, fy, sprite.width(), footerH, HH_GUNMETAL);
+    sprite.setTextColor(HH_BLUE, HH_GUNMETAL);
+    sprite.setCursor(4, fy + 2);
+    sprite.print("UP/DN Nav | B Back");
+}
+
 static void uiRenderTaskFn(void *param) {
     (void)param;
 
@@ -1899,6 +2203,13 @@ static void uiRenderTaskFn(void *param) {
                 memcpy(s_bleDrawRows, s_bleRows, n * sizeof(BleDisplayRow));
             }
         }
+        if (local.kind == ScreenState::TRACKER_LIST) {
+            int n = local.count;
+            if (n > UI_TRACKER_MAX_ROWS) n = UI_TRACKER_MAX_ROWS;
+            if (n > 0) {
+                memcpy(s_trackerDrawRows, s_trackerRows, n * sizeof(TrackerDisplayRow));
+            }
+        }
         if (local.kind == ScreenState::NRF_SNIFFER) {
             s_nrfSniffDrawStats = s_nrfSniffStats;
             s_nrfSniffDrawSelected = s_nrfSniffSelected;
@@ -1944,6 +2255,13 @@ static void uiRenderTaskFn(void *param) {
             renderMouseJack(&s_mjDraw);
         } else if (local.kind == ScreenState::BLE_LIST) {
             renderBleDevices(s_bleDrawRows, &s_bleDrawStats, s_bleDrawSelected);
+        } else if (local.kind == ScreenState::TRACKER_SCANNING) {
+            renderTrackerScanning(local.title, local.titleLine2, local.countLabel,
+                                 local.count, local.trackerScans, local.message, local.hint);
+        } else if (local.kind == ScreenState::TRACKER_LIST) {
+            renderTrackerList(local.title, local.titleLine2, local.trackerShowHeader,
+                              local.countLabel, local.count, local.trackerScans,
+                              s_trackerDrawRows, local.count, local.selected);
         } else if (local.kind == ScreenState::SPLASH) {
             renderSplash();
         } else if (local.kind == ScreenState::INFO) {
@@ -2215,6 +2533,50 @@ void uiRenderShowBleDevices(const BleDisplayRow *rows, const BleDisplayStats *st
     if (n < 0) n = 0;
     if (n > 0 && rows) {
         memcpy(s_bleRows, rows, n * sizeof(BleDisplayRow));
+    }
+    xSemaphoreGive(s_stateMutex);
+    if (s_taskHandle) {
+        xTaskNotifyGive(s_taskHandle);
+    }
+}
+
+void uiRenderShowTrackerScanning(const char *title, const char *titleLine2,
+                                 const char *countLabel, int found, int scans,
+                                 const char *legendLine1, const char *legendLine2) {
+    xSemaphoreTake(s_stateMutex, portMAX_DELAY);
+    s_state.kind = ScreenState::TRACKER_SCANNING;
+    s_state.icons = NULL;
+    strlcpy(s_state.title, title, sizeof(s_state.title));
+    strlcpy(s_state.titleLine2, titleLine2 ? titleLine2 : "", sizeof(s_state.titleLine2));
+    strlcpy(s_state.countLabel, countLabel, sizeof(s_state.countLabel));
+    s_state.count = found;
+    s_state.trackerScans = scans;
+    strlcpy(s_state.message, legendLine1 ? legendLine1 : "", sizeof(s_state.message));
+    strlcpy(s_state.hint, legendLine2 ? legendLine2 : "", sizeof(s_state.hint));
+    xSemaphoreGive(s_stateMutex);
+    if (s_taskHandle) {
+        xTaskNotifyGive(s_taskHandle);
+    }
+}
+
+void uiRenderShowTrackerList(const char *title, const char *titleLine2,
+                             bool showHeader, const char *countLabel, int scans,
+                             const TrackerDisplayRow *rows, int rowCount, int selected) {
+    xSemaphoreTake(s_stateMutex, portMAX_DELAY);
+    s_state.kind = ScreenState::TRACKER_LIST;
+    s_state.icons = NULL;
+    strlcpy(s_state.title, title, sizeof(s_state.title));
+    strlcpy(s_state.titleLine2, titleLine2 ? titleLine2 : "", sizeof(s_state.titleLine2));
+    strlcpy(s_state.countLabel, countLabel, sizeof(s_state.countLabel));
+    s_state.trackerShowHeader = showHeader;
+    s_state.trackerScans = scans;
+    s_state.selected = selected;
+    int n = rowCount;
+    if (n > UI_TRACKER_MAX_ROWS) n = UI_TRACKER_MAX_ROWS;
+    if (n < 0) n = 0;
+    s_state.count = n;
+    if (n > 0 && rows) {
+        memcpy(s_trackerRows, rows, n * sizeof(TrackerDisplayRow));
     }
     xSemaphoreGive(s_stateMutex);
     if (s_taskHandle) {
