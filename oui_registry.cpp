@@ -1,9 +1,7 @@
 #include "oui_registry.h"
 
-#include <SD.h>
 #include <string.h>
 
-#include "spi_manager.h"
 #include "storage_manager.h"
 
 namespace {
@@ -18,11 +16,14 @@ bool ouiRegistryLookup(const uint8_t mac[6], char *name, size_t nameSize) {
     if (!mac || !name || nameSize == 0) return false;
     name[0] = '\0';
     // Locally administered addresses do not carry a manufacturer OUI.
-    if ((mac[0] & 0x03) != 0 || !storageIsCardPresent()) return false;
-    if (!spiSelectSD()) return false;
+    if ((mac[0] & 0x03) != 0) return false;
+    // storageAcquire() checks card/filesystem presence itself (SD on boards
+    // with a card slot, LittleFS on the StickS3 — storage_manager.cpp picks
+    // the backend) and takes whatever lock that backend needs.
+    if (!storageAcquire()) return false;
 
     bool found = false;
-    File file = SD.open(kPath, FILE_READ);
+    File file = storageFilesystem().open(kPath, FILE_READ);
     if (file) {
         uint8_t header[kHeaderSize];
         if (file.read(header, sizeof(header)) == sizeof(header) &&
@@ -60,6 +61,6 @@ bool ouiRegistryLookup(const uint8_t mac[6], char *name, size_t nameSize) {
         }
         file.close();
     }
-    spiDeselect();
+    storageRelease();
     return found;
 }
